@@ -1,0 +1,126 @@
+---
+title: "Freesurfer QC by Raw Euler Numbers"
+author: "Shanny Foo"
+date: "10/08/2022"
+output: word_document
+---
+#### HOUSECLEANING IN R ####
+```{r Clearing R Workspace, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+## Keeping things tidy
+# To comment/uncomment out whole chunk: SHIFT+CTRL+C
+# To Restart R: SHIFT+CTRL+F10
+
+
+## Clearing the environment: sometimes it's better to start fresh
+
+# Clear plots
+if(!is.null(dev.list())) dev.off()  # In GUI: clear all plots in the plots panel.
+
+# Clear console
+cat("\014")  # In GUI: Ctrl+L or to click on the clear console within the Edit menu.
+
+# Clean workspace
+rm(list=ls())  # In GUI: clear objects from the workspace in the environment panel.
+```
+
+
+
+--- SETUP ---
+
+#### LOAD LIBRARIES ####
+```{r}
+# These are the packages that will be necessary to run the scripts
+library(tidyverse)  # data management
+library(ggpubr)  # plotting
+```
+
+
+#### LOAD DATA AND MODIFY DATAFRAME ####
+```{r}
+## From freesurfer, calculate euler numbers (e.g., Bash script) and save to a csv file. Euler Number values will be used to calculate central tendency of group and use IQR values to determine minumum Euler Number value for cut-off (i.e., as lower bound outliers). We ignore the upper bound since higher Euler Numbers indicate higher image quality. 
+
+# Load your data into dataframe format from csv using read.csv() function. For example:
+Data <- read.csv(("E:\\Filepath\\subdirs\\Data.csv")  # Ensure data quality prior to loading in R
+
+
+## Modify dataframe for variables necessary for calculations
+Euler <- Data %>%
+  select(SubjectID, Session, left_euler, right_euler) %>%  # left and right euler needed for calculation
+  drop_na(SubjectID, Session, left_euler, right_euler) %>%  # drop missing values
+  mutate(average_euler = (left_euler+right_euler)/2)  # calculate average euler 
+# We will use the average of left and right to determine a single value per row (i.e., scan)
+```
+
+
+
+--- CALCULATE CUT-OFF FROM EULER NUMBERS 
+
+#### OUTLIER DETECTION FROM IQR VALUES ####
+```{r}
+## Plot histogram to get idea of data distribution
+ggplot(Euler, aes(x=average_euler)) + geom_histogram()
+
+
+## Using IQR to calculate cut-off ranges (see: Moereao-Sanchez et al., 2021): "outliers were defined as 1.5 interquartile range (IQR) below the first quartile (Q1), and 1.5 IQR above the third quartile (Q3), following the classical method pro- posed by Tukey (1977) . Hence, the lower inner fence was defined as Q1-1.5 ∗ IQR, while the upper inner fence was Q3 + 1.5 ∗ IQR"
+summary(Euler$average_euler)
+
+
+## Calculation for cut-off values: calculate Q1, Q2, and IQR for the data
+Q1 = quantile(Euler$average_euler, 0.25) # First quartile
+Q3 = quantile(Euler$average_euler, 0.75) # Third quartile
+IQR_euler = IQR(Euler$average_euler, na.rm=TRUE)  # IQR for average_euler
+
+
+## Multiply IQR by 1.5 (a constant used to discern outliers): IQR_euler*1.5
+
+# Max range: add 1.5*IQR to Q3. Any number greater than this is a suspected outlier
+IQR_euler_outlier_max = Q3+(IQR_euler*1.5)  
+
+# Min range: subtract 1.5*IQR from Q1. Any number less than this is a supected outlier
+IQR_euler_outlier_min = Q1-(IQR_euler*1.5)  
+```
+
+
+#### SUMMARY CALCULATIONS FROM EULER NUMBER CUTOFFS ####
+```{r}
+## We focus on lower-bound cut-offs, which indicate these scans were outliers having particularly low quality images compared to the group. 
+
+# Calculate min cutoff outliers and count how many scans are below cutoff
+summary(Euler %>%
+          filter(average_euler < IQR_euler_outlier_min) %>%
+          summarise(count=n())
+)
+
+
+## Note: Before doing anything with these outliers, it is still important to do a visual inspection of these flagged scans in freeview (or whatever imaging software you use) to ensure these are in fact poor quality images and note as to why. 
+
+# One good source for grading scan quality: Read Visual QC documentation - download the software if possible for Windows. Read manual for idea on how to grade the scan quality: Minor Error, Major Error, Fail (with notes for why and where the error is). Also, do I need/want to download VisualQC onto a workstation?
+
+# Bert in freesurfer is a great comparison for what is a good image
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

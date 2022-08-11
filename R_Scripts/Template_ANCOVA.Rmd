@@ -1,0 +1,682 @@
+---
+title: "ANCOVA"
+author: "Shanny Foo"
+date: "25/06/2022"
+output: word_document
+---
+
+#### HOUSECLEANING IN R ####
+# To comment/uncomment out whole chunk: SHIFT+CTRL+C
+# To Restart R: SHIFT+CTRL+F10
+```{r Clearing R Workspace, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# Clear plots
+if(!is.null(dev.list())) dev.off()  # In GUI: clear all plots in the plots panel.
+
+# Clear console
+cat("\014")  # In GUI: Ctrl+L or to click on the clear console within the Edit menu.
+
+# Clean workspace
+rm(list=ls())  # In GUI: clear objects from the workspace in the environment panel.
+```
+
+
+
+--- SETUP
+
+#### LIBRARIES ####
+```{r warning=TRUE, include=FALSE}
+#library(openxlsx)
+library(readxl)
+
+library(tidyverse)
+library(ggpubr)
+library(ggplot2)
+library(pBrackets)
+library(grid)
+library(rstatix)
+library(ggprism)
+library(patchwork)
+library(magrittr)
+library(emmeans)
+library(zoo)
+```
+
+
+#### SOURCE DATAFRAME: VARIABLE RE-NAMING AND ASSIGNMENT ####
+```{r All Data, message=FALSE, warning=TRUE, include=FALSE, paged.print=FALSE}
+## Loading a dataframe from Excel: indicate filepath, name of excel file, and worksheet
+Dataframe <- read_excel("E:\\Filepath\\subdirs\\NameOfExcelFile.xlsx", sheet = "NameOfSheet")
+
+
+## (if needed) Mutate variables of interest 
+Dataframe <- Dataframe %>%
+  mutate(New_Var = (Old_Var1+Old_Var2/2))  # Example of New Variable created based on averaging two other variables
+
+
+## (if needed) Take median TIV within subject (they will have had prior measurements, hopefully, and this does not tend to change within the same individual
+Dataframe <- Dataframe %>%
+  group_by(Subject) %>%
+  mutate(TIV_med = median(TIV_mm3, na.rm = TRUE)) # Reduces number of missing subjects
+  ungroup()
+
+  
+## (if needed) Rename variables
+Dataframe <- Dataframe %>%
+  rename("NewVarName" = OldVarName,  # NewVarName replaces label for OldVarName 
+         "NewVarName2" = OldVarName2) %>%
+    mutate_if(is.numeric,
+            round,
+            digits = 2)  # Round to 2 digits
+```
+
+
+
+--- DATA CLEANING AND PREPROCESSING
+
+#### SELECT VARIABLES OF INTEREST ####
+```{r Labelling variables, echo=FALSE, message=FALSE, warning=TRUE, paged.print=FALSE}
+## Create a new dataframe from the omnibus main source:
+    # group data by grouping variables (e.g., by subject in longtiduinal, by Grouping Variable 1 for summary counts)
+    # select the variables you will be using (keeping it clean)
+    # filter out by conditions (to only include the data you want to analyse)
+ 
+SubDF <- Dataframe %>%
+  group_by(factor) %>%  # grouping factor (e.g., subject in longitudinal)
+  select(Var1, Var2, Var3, Var4, Var5) %>%  # select variables to be included in analysis
+  filter(GroupingVariable1 %in% c("level1", "level2", "level3")) %>%  # filter what subgroups or conditions to include
+  filter(GroupingVariable2 %in% c("level1", "level2", "level3", "level4")) %>%  # filter what subgroups or conditions to include
+  filter(Condition %in% c("Condition1","Condition2","Condition3")  # filter what subgroups or conditions to include
+
+```
+
+
+#### SET FACTORS ####
+```{r}
+## Set factors (i.e., categorical grouping variables)
+
+# Subject is set as a factor in longitudinal analysis since each subject has multiple rows (1 per timepoint)
+SubDF["Subject"]<-lapply(SubDF["Subject"],factor)
+
+# Convert random effects to factors (e.g., Grouping Variable 1, Genetic Group, Gender, Site, Scanner, Timepoint). These are categorical so cannot contain continuous variables (if necessary, bin and reassign continuous to categories)
+SubDF["Factor1"]<-lapply(SubDF["Factor1"],factor)  
+SubDF["Factor2"]<-lapply(SubDF["Factor2"],factor)
+SubDF["Factor3"]<-lapply(SubDF["Factor3"],factor)
+
+# Check factor levels - is it what you expected?
+levels(SubDF$Factor1)
+levels(SubDF$Factor2)
+levels(SubDF$Factor3)
+
+# Check first 10 lines - does it look right?
+head(SubDF, n=10)
+
+## Note that timepoint would not be a factor in longitudinal analysis as subject would be the grouping factor. Additionally, we would be measuring change over time so these would be within-subject measurements.
+```
+
+
+
+--- COMPUTE ANCOVA
+
+#### ANCOVA STEP 1: CHECK FOR INTERACTION(S)
+```{r}
+## Check for interaction: Include all grouping variables
+res.aov <- Dataframe %>%
+  ungroup() %>%  # Do this just in case it was auto-grouped by subject
+  anova_test(DV ~ Cov1 + Cov2 + Cov3 + Cov4 + Cov5 + Cov6 + Cov7 + GroupingVariable1*GroupingVariable2)
+get_anova_table(res.aov)
+```
+
+
+#### ANCOVA STEP 2A: IF THERE IS INTERACTION, RUN TWO-WAY ANCOVA
+```{r}
+### Compute two-way ANCOVA ###
+
+## Compute ANCOVA with interaction term 
+res.aov <- Dataframe %>%
+  ungroup() %>%
+  anova_test(DV ~ Cov1 + Cov2 + Cov3 + Cov4 + Cov5 + Cov6 + Cov7 + GroupingVariable1*GroupingVariable2)
+get_anova_table(res.aov)
+
+
+### Simple main effect analyses for GroupingVariable1 at each level of GroupingVariable2 ###
+
+# Group data by GroupingVariable2 and perform one-way ANCOVA for GroupingVariable1 controlling for covariates
+Dataframe %>%
+  group_by(GroupingVariable2) %>%
+  anova_test(V ~ Cov1 + Cov2 + Cov3 + Cov4 + Cov5 + Cov6 + Cov7 + GroupingVariable1) 
+
+# Pairwise comparisons between GroupingVariable1 groups at each level of GroupingVariable2 with Bonferroni correction applied
+pwc1 <- Dataframe %>%
+  group_by(GroupingVariable2) %>%
+  emmeans_test(
+    DV ~ GroupingVariable1, covariate = c(Cov1, Cov2),
+    p.adjust.method = "bonferroni") # Note that contrasts must have more than 2 levels (otherwise run a T-Test or ANOVA for variables with 2 or less variables) so Gender cannot be included
+pwc1 %>% filter(GroupingVariable2 %in% c("level1", "level2", "level3", "level4")) # Include ONLY subgroups of GroupingVariable2 found to be significant
+get_emmeans(pwc1)
+
+
+###Simple main effect of GroupingVariable2 at each level of GroupingVariable1 (same as above) ###
+Dataframe %>%
+  group_by(GroupingVariable1) %>%
+  anova_test(DV ~ Cov1 + Cov2 + Cov3 + Cov4 + Cov5 + Cov6 + Cov7 + GroupingVariable2) %>%
+  ungroup()
+
+# Pairwise comparisons between GroupingVariable2 at each level of GroupingVariable1
+pwc2 <- Dataframe %>%
+  group_by(GroupingVariable1) %>%
+  emmeans_test(
+    DV ~ GroupingVariable1, covariate = c(Cov1, Cov2),
+    p.adjust.method = "bonferroni"
+  ) %>%
+  select(-df, -statistic, -p) # Remove details (optional)
+pwc2 %>% filter(GroupingVariable1 %in% c("level1", "level2", "level3")) # Include ONLY subgroups of GroupingVariable1 found to be significant
+get_emmeans(pwc2)
+```
+
+
+#### ANCOVA STEP 2B: IF NO INTERACTION, COMPUTE ONE-WAY ANCOVA 
+```{r}
+### Compute one-way ANCOVA ###
+
+# ANCOVA: include only grouping variables with main effect
+res.aov <- Dataframe %>% anova_test(DV ~ Cov1 + Cov2 + Cov3 + Cov4 + Cov5 + Cov6 + Cov7 + GroupingVariable1)
+get_anova_table(res.aov)
+
+
+### Pairwise comparisons ###
+pwc <- Dataframe %>%
+  ungroup() %>%
+  emmeans_test(
+    DV ~ GroupingVariable1, covariate = c(Cov1, Cov2),
+    p.adjust.method = "bonferroni"
+  ) # Note that contrasts must have more than 2 levels (otherwise run a T-Test or ANOVA for variables with 2 or less variables) so Gender cannot be included
+pwc
+get_emmeans(pwc) # Display the adjusted means of each group (i.e., estimated marginal means)
+```
+
+
+
+--- CHECK ANCOVA ASSUMPTIONS
+
+#### ANCOVA STEP 3A: IF THERE IS INTERACTION, CHECK TWO-WAY ANCOVA ASSUMPTIONS
+```{r}
+#### TWO-WAY ANCOVA: Assumptions Check ####
+### GroupingVariable1: DV ###
+
+#### Step 1: ANCOVA Assumptions ####
+
+
+### Linearity: for each covariate
+ggscatter(
+  Dataframe, x = "Cov1", y = "DV",
+  facet.by  = c("GroupingVariable2", "GroupingVariable1"),
+  short.panel.labs = FALSE
+)+
+  stat_smooth(method = "loess", span = 0.9)
+
+ggscatter(
+  Dataframe, x = "Cov2", y = "DV",
+  facet.by  = c("GroupingVariable2", "GroupingVariable1"),
+  short.panel.labs = FALSE
+)+
+  stat_smooth(method = "loess", span = 0.9)
+
+ggscatter(
+  Dataframe, x = "Cov3", y = "DV",
+  facet.by  = c("GroupingVariable2", "GroupingVariable1"),
+  short.panel.labs = FALSE
+)+
+  stat_smooth(method = "loess", span = 0.9)
+
+
+
+### Homogeneity of regression slopes: for each covariate
+Dataframe %>% anova_test(
+  DV ~ Cov1 + GroupingVariable1 + GroupingVariable2 + GroupingVariable1*GroupingVariable2 + Cov1* GroupingVariable1 + Cov1*GroupingVariable2 + Cov1*GroupingVariable2*GroupingVariable1)
+
+Dataframe %>% anova_test(
+  DV ~ Cov2 + GroupingVariable1 + GroupingVariable2 + GroupingVariable1*GroupingVariable2 + Cov2* GroupingVariable1 + Cov2*GroupingVariable2 + Cov2*GroupingVariable2*GroupingVariable1)
+
+Dataframe %>% anova_test(
+  DV ~ Cov3 + GroupingVariable1 + GroupingVariable2 + GroupingVariable1*GroupingVariable2 + Cov3* GroupingVariable1 + Cov3*GroupingVariable2 + Cov3*GroupingVariable2*GroupingVariable1)
+
+
+## Alternate way to do homogeneity of regression slopes
+Dataframe %>%
+  unite(col = "group", GroupingVariable1, GroupingVariable2) %>%
+  anova_test(DV ~ group*Cov1)
+
+Dataframe %>%
+  unite(col = "group", GroupingVariable1, GroupingVariable2) %>%
+  anova_test(DV ~ group*Cov2)
+
+Dataframe %>%
+  unite(col = "group", GroupingVariable1, GroupingVariable2) %>%
+  anova_test(DV ~ group*Cov3)
+
+
+
+### Normality of residuals: Shapiro-Wilks Test
+model <- lm(DV ~ Cov4 + Cov5 + Cov6 + Cov7 + Cov1 + Cov2 + Cov3 + GroupingVariable1*GroupingVariable2, data = Dataframe)
+
+model.metrics <- augment(model) %>%
+  select(-.hat, -.sigma, -.fitted)
+
+head(model.metrics, 3)
+
+shapiro_test(model.metrics$.resid)
+
+
+
+### Homoscedasticity: Levene's Test
+levene_test(.resid ~ GroupingVariable1*GroupingVariable2, data = model.metrics)
+
+
+
+### Outliers, p>|3|
+model.metrics %>%
+  filter(abs(.std.resid) > 3) %>%
+  as.data.frame()
+```
+
+
+#### ANCOVA STEP 3B: IF ONLY MAIN EFFECT(S), CHECK ONE-WAY ANCOVA ASSUMPTIONS
+```{r}
+#### ONE-WAY ANCOVA: Assumptions Check ####
+### GroupingVariable1: DV ###
+
+### Step 1: ANCOVA Assumptions ###
+
+
+### Linearity: for each covariate
+ggscatter(
+  Dataframe, x = "Cov1", y = "DV",
+  color = "GroupingVariable1", add = "reg.line"
+)+
+  stat_regline_equation(
+    aes(label =  paste(..eq.label.., ..rr.label.., sep = "~~~~"), color = GroupingVariable1)
+  )
+
+ggscatter(
+  Dataframe, x = "Cov2", y = "DV",
+  color = "GroupingVariable1", add = "reg.line"
+)+
+  stat_regline_equation(
+    aes(label =  paste(..eq.label.., ..rr.label.., sep = "~~~~"), color = GroupingVariable1)
+  )
+
+ggscatter(
+  Dataframe, x = "Cov3", y = "DV",
+  color = "GroupingVariable1", add = "reg.line"
+)+
+  stat_regline_equation(
+    aes(label =  paste(..eq.label.., ..rr.label.., sep = "~~~~"), color = GroupingVariable1)
+  )
+
+
+
+### Homogeneity of regression slopes: for each covariate
+Dataframe %>% anova_test(DV ~ GroupingVariable1*Cov1)
+
+Dataframe %>% anova_test(DV ~ GroupingVariable1*Cov2)
+
+Dataframe %>% anova_test(DV ~ GroupingVariable1*Cov3)
+
+
+
+### Normality of residuals: Shapiro-Wilks Test
+model <- lm(DV ~ Cov4 + Cov5 + Cov6 + Cov7 + Cov1 + Cov2 + Cov3 + GroupingVariable1, data = Dataframe)
+
+model.metrics <- augment(model) %>%
+  select(-.hat, -.sigma, -.fitted)
+
+head(model.metrics, 3)
+
+shapiro_test(model.metrics$.resid)
+
+
+
+### Homoscedasticity: Levene's Test
+model.metrics %>% levene_test(.resid ~ GroupingVariable1)
+
+
+
+### Outliers, p>|3|
+model.metrics %>%
+  filter(abs(.std.resid) > 3) %>%
+  as.data.frame()
+```
+
+
+
+--- PLOT ANCOVA RESULTS: VIOLIN PLOTS
+
+#### VIOLIN PLOT: DV MAIN EFFECTS ####
+```{r}
+#### CUSTOMIZE VIOLIN PLOTS ###
+
+## Change color by groups
+vp <- ggplot(Dataframe, aes(x=GroupingVariable1, y=DV, fill=GroupingVariable1)) + 
+  geom_violin(trim=FALSE)+
+  geom_boxplot(width=0.1, fill=NA)+  # How wide you want the boxplot to be
+  #geom_dotplot(binaxis="y", stackdir="center", dotsize=0.1)+  # Do you want scatter overlay?
+  #geom_jitter(shape=16, position=position_jitter(0.2), alpha=0.3)+  # Jitter overlay
+  labs(x="Grouping Variable", y = "DV)")+
+  #labs(title="", x="Grouping Variable", y = "DV")+
+  scale_x_discrete(breaks=c("level1","level2","level3"),
+        labels=c("level1 label", "level2 label", "level3 label"))
+
+
+## Add p-values manually
+vp +
+  geom_bracket(
+    inherit.aes=FALSE,
+    xmin = c(1, 2), xmax = c(3, 3),  # where you want the xmax and min values for each set of labels (i.e., x1min, x2min and then x1max, x2max)
+    y.position = c(40, 35), label = c("****", "****"),  # where you want the y position or height of the labels (y1, y2) and then the text you want i th elabel
+    tip.length = 0.02,  # the length of the bracket end bits that hang
+    color = c("black"),
+    size = 0.7
+    ) +
+  labs(x = "Grouping Variable 1",  # Name your axes
+       y = "DV",
+       #title = "",
+       #subtitle = "",
+       #caption = "",
+       #tab = "",
+       #alt = "",
+       #alt_insight = "",
+       ) +
+  labs(fill = "Grouping Variable 1") +  # colour by grouping variable 1
+  font("title", size = 14, color = "black", face = "plain")+
+  font("subtitle", size = 10, color = "black")+
+  font("caption", size = 10, color = "black")+
+  font("xlab", size = 14, color = "black")+
+  font("ylab", size = 14, color = "black")+
+  font("xy.text", size = 14, color = "black", face = "plain") +
+  theme_minimal() +
+  theme(axis.title.x = element_text(margin = margin(t = 1, r = 15, b = 0, l = 0)), 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 1, l = 1)),
+        axis.text.x = element_text(vjust=+5),
+        legend.position="top") +  # Increase space between title labels and plot and move legend to top
+  scale_fill_brewer(palette = "YlGnBu")
+
+
+# Change tick labels: http://www.sthda.com/english/wiki/ggplot2-axis-ticks-a-guide-to-customize-tick-marks-and-labels
+# Change tick label location: https://www.datanovia.com/en/blog/ggplot-axis-ticks-set-and-rotate-text-labels/
+# Brewer palettes: https://www.datanovia.com/en/blog/the-a-z-of-rcolorbrewer-palette/
+# Brwer palette card: https://r-graph-gallery.com/38-rcolorbrewers-palettes.html
+
+```
+
+
+#### VIOLIN PLOT: DV INTERACTION ####
+```{r}
+#### CODE VARIABLES FOR INTERACTION PLOTTING ####
+
+# Source: https://www.marsja.se/how-to-concatenate-two-columns-or-more-in-r-stringr-tidyr/
+# Source: https://stackoverflow.com/questions/62000584/r-paste-two-strings-without-space
+
+
+#### SET-UP ####
+
+## Concatenate Grouping Variables 1 and 2 into a new column
+Dataframe$GroupingVariable1and2 <- paste(Dataframe$GroupingVariable1, "_", Dataframe$GroupingVariable2)
+
+Dataframe$GroupingVariable1and2
+
+
+## Remove spaces in new column variables
+gsub(" ", "", paste(Dataframe$GroupingVariable1, "_", Dataframe$GroupingVariable2))
+
+
+
+#### CUSTOMIZE VIOLIN PLOTS ####
+
+## Change color by groups
+vp <- ggplot(Dataframe, aes(x=GroupingVariable1and2, y=DV, fill=GroupingVariable2)) + 
+  geom_violin(trim=FALSE)+  # Do not trim the tails of the violins
+  geom_boxplot(width=0.1, fill="NA")+  # Add median and quartle
+  #geom_boxplot(width=0.1, fill="white")+
+  #labs(title="Plot of DV  by Genetic Group", x="GroupingVariable1and2", y = "DV")
+  labs(x="Grouping Variable 1", y = "Anterior Insula Volume")+
+  #labs(title="", x="Grouping Variable 1", y = "Anterior Insula Volume")+
+  scale_x_discrete(labels=c("Non-mutation carriers", " ", "Presymptomatic", " ", " ", "Symptomatic", " "))  # Rename x-tick labels
+vp
+  
+
+## Add p-values manually
+vp +
+  geom_bracket(
+    inherit.aes=FALSE,
+    xmin = c(1, 2), xmax = c(7, 7),
+    y.position = c(9800, 9200), label = c("****", "****"), 
+    vjust=0.3,
+    tip.length = 0.02,
+    color = c("black"),
+    size = 0.6
+    ) +
+  geom_bracket(
+    inherit.aes=FALSE,
+    xmin = c(5), xmax = c(7),
+    y.position = c(7100), label = c("***"),
+    vjust=0.3,
+    tip.length = 0.02,
+    color = c("purple4"),
+    size = 0.6
+    ) +
+    geom_bracket(
+    inherit.aes=FALSE,
+    xmin = c(0.5, 2, 5), xmax = c(1.5, 4, 7),
+    y.position = c(-50, -50, -50), label = c(" ", " ", " "),
+    tip.length = -0.02,
+    color = c("turquoise4"),
+    size = 1,
+    )+
+  labs(x = "Grouping Variables 1 and 2 Sub-Groups",
+       y = "DV",
+       #title = "",
+       #subtitle = "",
+       #caption = "",
+       #tab = "",
+       #alt = "",
+       #alt_insight = "",
+       ) +
+  labs(fill = "Grouping Variable 2") +
+  font("title", size = 14, color = "black", face = "plain")+
+  font("subtitle", size = 10, color = "black")+
+  font("caption", size = 10, color = "black")+
+  font("xlab", size = 14, color = "black")+
+  font("ylab", size = 14, color = "black")+
+  font("xy.text", size = 12, color = "black", face = "plain") +
+  theme_minimal() +
+  theme(axis.title.x = element_text(margin = margin(t = -6, r = 15, b = 0, l = 0)), 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 1, l = 1)),
+        axis.text.x = element_text(vjust=+8),
+        legend.position="top") +  # Increase space between title labels and plot and move legend to top
+  scale_fill_brewer(palette = "PiYG")  # Change to gradient color scheme
+
+# Note: aesthetics are inherited by default. The geom_path is trying to look for the Group variable on the path dataset to get the color. You should use inherit.aes = FALSE on the geom_path
+
+# Source: https://stackoverflow.com/questions/44988682/scatterplot-error-in-funxi-object-group-not-found
+
+# Chart of all manual colours for ggplot2: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
+
+```
+
+
+
+--- PLOT ANCOVA RESULTS: BAR CHARTS
+
+#### BAR CHART: INTERACTION ###
+```{r}
+#### BAR PLOT: INTERACTION ####
+
+## Statistical Tests
+stat.test <- Dataframe %>%
+  ungroup() %>%
+  emmeans_test(DV ~ GroupingVariable1,
+               #covariate = c(Gender),
+               #ref.group = "NMC",
+               #comparisons = list(c("NMC", "PMC", "SMC"), c("NMC", "C9", "GRN", "MAPT")),
+               p.adjust.method = "bonferroni",
+               conf.level = 0.95,
+               #model = NULL,
+               #detailed = FALSE
+               )
+stat.test
+
+
+### Bar plots ###
+bp1 <- ggbarplot(
+  Dataframe, x = "GroupingVariable1", y = "DV", fill = "GroupingVariable2",
+  legend = "top", #none to remove; also: top, bottom, left, right
+  #main = "AIC GM Volume by Group",
+  xlab = "Grouping Variable 1",
+  ylab = "DV ",
+  palette = "aaas", add = "mean_sd",
+  position = position_dodge(0.8)
+  )
+bp1
+
+
+## Add p-values onto the bar plots
+bp1 +
+  geom_bracket(
+    xmin = c(1, 2), xmax = c(3, 3),
+    y.position = c(7000, 6500), label = c("****", "****"),
+    tip.length = 0.02,
+    color = c("black"),
+    size = 0.7
+    ) +
+  geom_bracket(
+    xmin = c(3, 2.8), xmax = c(3.3, 3.3),
+    y.position = c(5200, 5700), label = c("****", "****"),
+    tip.length = 0.02,
+    color = c("forest green"),
+    size = 0.7
+    ) +
+  labs(fill = "Grouping Variable 1") +
+  font("title", size = 14, color = "black", face = "bold")+
+  font("subtitle", size = 10, color = "black")+
+  font("caption", size = 10, color = "black")+
+  font("xlab", size = 14, color = "black")+
+  font("ylab", size = 14, color = "black")+
+  font("xy.text", size = 14, color = "black", face = "bold")
+
+# Adjust brackets and change p-values to numbers or stars: https://www.datanovia.com/en/blog/how-to-add-p-values-onto-a-grouped-ggplot-using-the-ggpubr-r-package/
+
+```
+
+
+#### BAR CHART: MAIN EFFECTS ###
+```{r}
+#### BAR PLOT: MAIN EFFECTS ####
+
+## Statistical Tests
+
+stat.test <- Dataframe %>%
+  ungroup() %>%
+  emmeans_test(DV ~ GroupingVariable1,
+               #covariate = c(Gender),
+               #ref.group = "NMC",
+               #comparisons = list(c("NMC", "PMC", "SMC"), c("NMC", "C9", "GRN", "MAPT")),
+               p.adjust.method = "bonferroni",
+               conf.level = 0.95,
+               #model = NULL,
+               #detailed = FALSE
+               )
+stat.test
+
+
+## Bar plots ##
+
+bp2 <- ggbarplot(
+  Dataframe, x = "GroupingVariable1", y = "DV", fill = "GroupingVariable2",
+  title = "",
+  legend = "top",
+  ylab = "DV",
+  xlab = "Grouping Variable 1",
+  color = "GroupingVariable2",
+  add = c("mean_sd", "point"), add.params = list(color = "black", alpha=0.08), palette = "aaas",
+                 position = position_dodge(.8)) + theme(axis.line = element_line(size = 0.9), axis.ticks = element_line(size = 0.9))
+  #add = c("mean_se", "point"), add.params = list(color = "black", alpha=0.08), palette = "aaas",                  position = position_dodge(.8)) + theme(axis.line = element_line(size = 0.9), axis.ticks = element_line(size = 0.9))
+bp2
+
+
+## Add p-values onto the bar plots
+stat.test <- stat.test %>%
+  add_xy_position(fun = "mean_sd", x = "GroupingVariable1", dodge = 0.8)
+bp2 + stat_pvalue_manual(
+  stat.test,  label = "p.adj.signif", DV = 0.01, hide.ns = TRUE
+  ) +
+  labs(fill = "Grouping Variable 1") +
+  font("title", size = 14, color = "black", face = "bold")+
+  font("subtitle", size = 10, color = "black")+
+  font("caption", size = 10, color = "black")+
+  font("xlab", size = 14, color = "black")+
+  font("ylab", size = 14, color = "black")+
+  font("xy.text", size = 14, color = "black", face = "bold")
+
+bp2 + stat_pvalue_manual(stat.test,  label = "p.adj.signif", tip.length = 0.02, bracket.nudge.y = +220, step.increase = 0.05, DV = 0.0, hide.ns = TRUE)
+
+```
+
+
+#### HOW TO CHANGE PLOT THEME TO TRANSPARENT
+```{r}
+# Ref: https://stackoverflow.com/questions/7455046/how-to-make-graphics-with-transparent-background-in-r-using-ggplot2
+
+# Ref: https://www.statology.org/ggplot-transparent-background/
+
+## Quick and dirty way (that works most times)
+p <- p +
+  theme(
+        rect = element_rect(fill = "transparent") # all rectangles
+      )
+p
+
+
+## More controlled way is to use options of theme: set transparency
+p <- p +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    panel.grid.major = element_blank(), #remove major gridlines
+    panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent') #transparent legend panel
+    )
+
+
+## If you decide to export the plot using ggsave(), be sure to specify that the background should be transparent:
+ggsave(p, filename = "tr_tst2.png",  bg = "transparent")
+
+
+```
+
+
+
+--- ADDITIONAL RESOURCES
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

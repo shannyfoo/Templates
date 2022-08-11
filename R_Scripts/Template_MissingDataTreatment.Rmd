@@ -1,0 +1,579 @@
+---
+title: "Template_Missing_Data_Treatment"
+author: "Shanny Foo"
+date: "26/06/2022"
+output: word_document
+---
+
+## NOTE: IMPUTATION SELECTION - correlate imputed values with each other to check for method convergence 
+
+
+#### HOUSECLEANING IN R ####
+# To comment/uncomment out whole chunk: SHIFT+CTRL+C
+# To Restart R: SHIFT+CTRL+F10
+```{r Clearing R Workspace, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+# Clear plots
+if(!is.null(dev.list())) dev.off()  # In GUI: clear all plots in the plots panel.
+
+# Clear console
+cat("\014")  # In GUI: Ctrl+L or to click on the clear console within the Edit menu.
+
+# Clean workspace
+rm(list=ls())  # In GUI: clear objects from the workspace in the environment panel.
+
+```
+
+
+--- SETUP: DATA PREP
+#### LIBRARIES ####
+```{r warning=TRUE, include=FALSE}
+
+# Reading and writing to Excel
+library(readxl)
+library(writexl)
+
+# Data management
+library(tidyverse)
+library(zoo)
+
+# Missing data treatment
+library(Hmisc) # assumes linearity in variables and uses Fisher's for categorical
+library(DMwR2) # knn imputation
+library(rpart)
+library(mice) # linear regression for continuous variables and logarithmic for categorical
+
+# Other packages for missing data
+library(Amelia) # best for for variables with normal distribution
+library(missForest) # non-parametric method
+library(mi) # matches based on closest predictive mean to that variable
+library(VIM) # dataviz for NA
+```
+
+
+#### ISSUES INSTALLING PACKAGES ####
+```{r}
+# Source: https://community.rstudio.com/t/downloading-a-package-that-has-been-removed-from-cran/107479
+
+## Issue: package DMwR has been removed from CRAN
+
+
+## Instructions for workaround:
+
+    # Install package "devtools" and then load library
+          library(devtools)
+    # Use a CRAN mirror: 
+          remotes::install_github("cran/DMwR")
+```
+
+
+#### SOURCE DATAFRAME: VARIABLE RE-NAMING AND ASSIGNMENT ####
+```{r All Data, message=FALSE, warning=TRUE, include=FALSE, paged.print=FALSE}
+## Loading a dataframe from Excel: indicate filepath, name of excel file, and worksheet
+Dataframe <- read_excel("E:\\Filepath\\subdirs\\NameOfExcelFile.xlsx", sheet = "NameOfSheet")
+
+
+## (if needed) Mutate variables of interest 
+Dataframe <- Dataframe %>%
+  mutate(New_Var = (Old_Var1+Old_Var2/2))  # Example of New Variable created based on averaging two other variables
+
+
+## (if needed) Take median TIV within subject (they will have had prior measurements, hopefully, and this does not tend to change within the same individual
+Dataframe <- Dataframe %>%
+  group_by(Subject) %>%
+  mutate(TIV_med = median(TIV_mm3, na.rm = TRUE)) # Reduces number of missing subjects
+  ungroup()
+
+  
+## (if needed) Rename variables
+Dataframe <- Dataframe %>%
+  rename("NewVarName" = OldVarName,  # NewVarName replaces label for OldVarName 
+         "NewVarName2" = OldVarName2) %>%
+    mutate_if(is.numeric,
+            round,
+            digits = 2)  # Round to 2 digits
+```
+
+
+#### CHECK MISSING DATA ####
+```{r}
+## Calculate sum of missing data by column
+colSums(is.na(Dataframe))
+
+
+## Calculate sum of missing data by row
+sum(is.na(Dataframe$DV))
+```
+
+
+
+--- MISSING DATA TREATMENT: DELETION METHODS
+
+#### METHOD: LISTWISE DELETION ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+# Source: https://datascienceplus.com/missing-value-treatment/
+
+## LISTWISE DELETION: we delete observations where any of the variable is missing. Simplicity is one of the major advantage of this method, but this method reduces the power of model because it reduces the sample size. For simplicity we can say that, this method deletes the whole row of observations in which the data is missing
+
+# Example
+lm(DV ~ GroupingVariable1 + GroupingVariable2, data=Dataframe, na.action=na.omit)
+
+```
+
+
+#### METHOD: PAIRWISE DELETION ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+
+## PAIRWISE DELETION: we perform analysis with all cases in which the variables of interest are present. Advantage of this method is, it keeps as many cases available for analysis. One of the disadvantage of this method, it uses different sample size for different variables
+
+```
+
+
+#### METHOD: VARIABLE DELETION ####
+```{r}
+# Source: https://datascienceplus.com/missing-value-treatment/
+
+## If a particular variable is having more missing values that rest of the variables in the dataset, and, if by removing that one variable you can save many observations. I would, then, suggest to remove that particular variable, unless it is a really important predictor that makes a lot of business sense. It is a matter of deciding between the importance of the variable and losing out on a number of observations.
+
+```
+
+
+
+--- MISSING DATA TREATMENT: IMPUTATION METHODS
+
+#### METHOD: GENERALIZED MEAN/MEDIAN/MODE IMPUTATION ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+# Source: https://datascienceplus.com/missing-value-treatment/
+
+## GENERALIZED IMPUTATION: we calculate the mean or median for all non missing values of that variable then replace missing value with mean or median.
+
+```
+
+
+#### METHOD: SIMILAR CASE IMPUTATION WITH MEAN/MEDIAN/MODE ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+# Source: https://datascienceplus.com/missing-value-treatment/
+
+## SIMILAR CASE IMPUTATION: we calculate average for groups (e.g., NMC, PMC, SMC) separately of non-missing values then replace based on group. 
+
+## Replacing the missing values with the mean / median / mode is a crude way of treating missing values. Depending on the context, like if the variation is low or if the variable has low leverage over the response, such a rough approximation is acceptable and could possibly give satisfactory results.
+
+library(Hmisc)
+
+# Example
+impute(Dataframe$DV, mean)  # replace with mean
+impute(Dataframe$DV, median)  # median
+impute(Dataframe$DV, 20)  # replace specific number
+# or if you want to impute manually
+Dataframe$DV[is.na(Dataframe$DV)] <- mean(Dataframe$DV, na.rm = T)  # not run
+
+# Lets compute the accuracy when it is imputed with mean
+library(DMwR)
+actuals <- original$DV[is.na(Dataframe$DV)]
+predicteds <- rep(mean(Dataframe$DV, na.rm=T), length(actuals))
+regr.eval(actuals, predicteds)
+
+```
+
+
+
+--- MISSING DATA TREATMENT: PREDICTION MODELS
+
+####  NOTES ON PREDICTION MODELS #### 
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+
+### NOTES: HOW PREDICTION MODELS WORK ###
+
+## Prediction model is one of the sophisticated method for handling missing data. Here, we create a predictive model to estimate values that will substitute the missing data. 
+
+# In this case, we divide our data set into two sets: One set with no missing values for the variable and another one with missing values. 
+    # First data set become training data set of the model while second data set with missing values is test data set and variable with missing values is treated as target variable. 
+    # Next, we create a model to predict target variable based on other attributes of the training data set and populate missing values of test data set.We can use regression, ANOVA, Logistic regression and various modeling technique to perform this. 
+
+# There are 2 drawbacks for this approach
+    # 1) The model estimated values are usually more well-behaved than the true values.
+    # 2) If there are no relationships with attributes in the data set and the attribute with missing values, then the model will not be precise for estimating missing values.
+
+
+## KNN IMPUTATION: In this method of imputation, the missing values of an attribute are imputed using the given number of attributes that are most similar to the attribute whose values are missing. The similarity of two attributes is determined using a distance function. It is also known to have certain advantage & disadvantages.
+
+# Advantages:
+    # k-nearest neighbour can predict both qualitative & quantitative attributes
+    # Creation of predictive model for each attribute with missing data is not required
+    # Attributes with multiple missing values can be easily treated
+    # Correlation structure of the data is taken into consideration
+
+# Disadvantages:
+    # KNN algorithm is very time-consuming in analyzing large database. It searches through all the dataset looking for the most similar instances.
+    # Choice of k-value is very critical. Higher value of k would include attributes which are significantly different from what we need whereas lower value of k implies missing out of significant attributes.
+
+```
+
+
+#### METHOD: MICE PACKAGE ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+# Documentation: https://cran.r-project.org/web/packages/mice/index.html
+
+
+# MICE (Multivariate Imputation via Chained Equations) is one of the commonly used package by R users. Creating multiple imputations as compared to a single imputation (such as mean) takes care of uncertainty in missing values.
+
+# MICE assumes that the missing data are Missing at Random (MAR), which means that the probability that a value is missing depends only on observed value and can be predicted using them. It imputes data on a variable by variable basis by specifying an imputation model per variable.
+
+# For example: Suppose we have X1, X2….Xk variables. If X1 has missing values, then it will be regressed on other variables X2 to Xk. The missing values in X1 will be then replaced by predictive values obtained. Similarly, if X2 has missing values, then X1, X3 to Xk variables will be used in prediction model as independent variables. Later, missing values will be replaced with predicted values.
+
+# By default, linear regression is used to predict continuous missing values. Logistic regression is used for categorical missing values. Once this cycle is complete, multiple data sets are generated. These data sets differ only in imputed missing values. Generally, it’s considered to be a good practice to build models on these data sets separately and combining their results.
+
+# Precisely, the methods used by this package are:
+    # PMM (Predictive Mean Matching) — For numeric variables
+    # logreg(Logistic Regression) — For Binary Variables( with 2 levels)
+    # polyreg(Bayesian polytomous regression) — For Factor Variables (>= 2 levels)
+    # Proportional odds model (ordered, >= 2 levels)
+
+##############################
+
+
+#### STEP 1: LOAD DATA AND GET SUMMARY ####
+library(mice)
+
+summary(Dataframe)
+
+
+
+#### STEP 2: REMOVE CATEOGORICAL DATA ####
+Dataframe_numeric <- Dataframe %>%
+  select(Cohort, Cov1, Cov2, Cov3, DV1, DV2, DV3, DV4, DV5, TIV, Cov4, DV6)%>%
+  filter(Cohort=="Dataframe")
+
+summary(Dataframe_numeric)
+
+md.pattern(Dataframe_numeric)
+
+
+
+#### STEP 3: VISUALIZE MISSING DATA PATTERN ####
+library(VIM)
+
+mice_plot <- aggr(Dataframe_numeric, col=c('navyblue','yellow'),
+                  numbers=TRUE, sortVars=TRUE,
+                  labels=names(Dataframe_numeric), cex.axis=.7,
+                  gap=3, ylab=c("Missing data","Pattern"))
+# Output: Variables sorted by number of missings - percentage missing data
+
+
+
+#### STEP 4: IMPUTE MISSING VALUES ####
+imputed_Data <- mice(Dataframe_numeric, m=5, maxit = 50, method = 'pmm', seed = 500)
+
+summary(imputed_Data)
+
+## Explanation of the parameters used
+    # m — Refers to 5 imputed data sets
+    # maxit — Refers to no. of iterations taken to impute missing values
+    # method — Refers to method used in imputation. we used predictive mean matching.
+
+
+
+#### STEP 5: MODEL BUILDING ####
+imputed_Data$imp$DV1  # check imputed values
+
+
+## If there were 5 imputed datasets, we can select any using complete() function
+completeData <- complete(imputed_Data,2) # get complete data ( 2nd out of 5)
+
+
+## To build models on all 5 datasets, we can do it in one go using with() command. We can also combine the result from these models and obtain a consolidated output using pool() command.
+fit <- with(data = Dataframe_numeric, exp = lm(DV1 ~ DV2 + DV6))  # build predictive model
+
+combine <- pool(fit)  # combine results of all 5 models
+
+summary(combine)
+  
+```
+
+
+#### METHOD: AMELIA PACKAGE -- CRASHES DURING IMPUTATION, NEED TO DEBUG ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+
+# This package also performs multiple imputation (generate imputed data sets) to deal with missing values. Multiple imputation helps to reduce bias and increase efficiency. It is enabled with bootstrap based EMB algorithm which makes it faster and robust to impute many variables including cross sectional, time series data etc. Also, it is enabled with parallel imputation feature using multicore CPUs.
+
+# It makes the following assumptions:
+    # All variables in a data set have Multivariate Normal Distribution (MVN). It uses means and covariances to summarize data.
+    # Missing data is random in nature (Missing at Random)
+
+# It works this way. First, it takes m bootstrap samples and applies EMB algorithm to each sample. The m estimates of mean and variances will be different. Finally, the first set of estimates are used to impute first set of missing values using regression, then second set of estimates are used for second set and so on.
+
+# On comparing with MICE, MVN lags on some crucial aspects such as:
+    # MICE imputes data on variable by variable basis whereas MVN uses a joint modeling approach based on multivariate normal distribution.
+    # MICE is capable of handling different types of variables whereas the variables in MVN need to be normally distributed or transformed to approximate normality.
+    # Also, MICE can manage imputation of variables defined on a subset of data whereas MVN cannot.
+
+# Hence, this package works best when data has multivariable normal distribution. If not, transformation is to be done to bring data close to normality.
+
+##############################
+
+
+#### STEP 1: LOAD DATA AND GET SUMMARY ####
+library(Amelia)
+
+Dataframe_numeric <- Dataframe %>%
+  ungroup() %>%
+  filter(Cohort=="Cohort2") %>%  # Here, filtering by specific cohort in the dataset
+  select(GroupingVariable1, GroupingVariable2, Cov1, Cov2, Cov3, DV1, DV2, DV3, DV4, DV5, TIV, Cov4, DV6)
+  
+
+summary(Dataframe_numeric)
+
+
+
+#### STEP 2: SPECIFY COLUMNS AND CLASSIFY VARIABLES ####
+
+# The only thing that you need to be careful about is classifying variables. 
+    # idvars — keep all ID variables and other variables which you don’t want to impute
+    # noms — keep nominal variables here
+
+# Specify columns and run amelia
+amelia_fit <- amelia(Dataframe_numeric, m=5, parallel = "multicore", noms = c("GroupingVariable1", "GroupingVariable2"))
+
+
+
+#### STEP 3: CHECK IMPUTED COLUMNS ####
+
+# Access imputed outputs 
+amelia_fit$imputations[[1]]
+amelia_fit$imputations[[2]]
+amelia_fit$imputations[[3]]
+amelia_fit$imputations[[4]]
+amelia_fit$imputations[[5]]
+
+# To check a particular column in a data set, use the following commands             
+amelia_fit$imputations[[5]]$DV1
+
+# To xport the outputs to csv files
+write.amelia(amelia_fit, file.stem = "imputed_data_set")
+
+```
+
+
+#### METHOD: MISSFOREST PACKAGE ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+
+# As the name suggests, missForest is an implementation of random forest algorithm. It’s a non-parametric imputation method applicable to various variable types. 
+
+# Non-parametric method does not make explicit assumptions about functional form of f (any arbitary function). Instead, it tries to estimate f such that it can be as close to the data points without seeming impractical.
+
+# Simply, it builds a random forest model for each variable. Then it uses the model to predict missing values in the variable with the help of observed values.
+
+# It yield OOB (out of bag) imputation error estimate. Moreover, it provides high level of control on imputation process. It has options to return OOB separately (for each variable) instead of aggregating over the whole data matrix. This helps to look more closely as to how accurately the model has imputed values for each variable.
+
+##############################
+
+
+#### STEP 1: LOAD DATA AND GET SUMMARY ####
+library(missForest)
+
+# Since bagging works well on categorical variable too, we don’t need to remove them here. It very well takes care of missing value pertaining to their variable types
+Dataframe_numeric <- Dataframe %>%
+  ungroup() %>%
+  filter(Cohort=="Dataframe") %>%
+  select(GroupingVariable1, GroupingVariable2, Cov1, Cov2, Cov3, DV1, DV2, DV3, DV4, DV5, TIV, Cov4, DV6)
+
+summary(Dataframe_numeric)
+
+
+
+#### STEP 2: IMPUTE MISSING VALUES ####
+
+# Impute missing values, using all parameters as default values
+Dataframe_numeric.imp <- missForest(Dataframe_numeric.mis)
+
+
+
+### STEP 3: CHECK IMPUTED VALUES AND ERROR ####
+
+# Check imputed values
+Dataframe_numeric.imp$ximp
+
+# Check imputation error
+Dataframe_numeric.imp$OOBerror
+# Output: NRMSE is normalized mean squared error. It is used to represent error derived from imputing continuous values. PFC (proportion of falsely classified) is used to represent error derived from imputing categorical values.
+
+# Comparing actual data accuracy
+Dataframe_numeric.err <- mixError(Dataframe_numeric.imp$ximp, Dataframe_numeric.mis, Dataframe_numeric)
+Dataframe_numeric.err
+# Output: NRMSE (left) values represent how much error the continuous variables are imputed with. PFC shows how much error the categorical variables are imputed with. This can be improved by tuning the values of mtry and ntree parameter. mtry refers to the number of variables being randomly sampled at each split. ntree refers to number of trees to grow in the forest.
+
+```
+
+
+#### METHOD: HMISC ####
+```{r}
+# Source: https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+
+# Hmisc is a multiple purpose package useful for data analysis, high — level graphics, imputing missing values, advanced table making, model fitting & diagnostics (linear regression, logistic regression & cox regression) etc. Amidst, the wide range of functions contained in this package, it offers 2 powerful functions for imputing missing values. These are impute() and aregImpute(). Though, it also has transcan() function, but aregImpute() is better to use.
+
+# impute() function simply imputes missing value using user defined statistical method (mean, max, mean). It’s default is median. On the other hand, aregImpute() allows mean imputation using additive regression, bootstrapping, and predictive mean matching.
+
+# In bootstrapping, different bootstrap resamples are used for each of multiple imputations. Then, a flexible additive model (non parametric regression method) is fitted on samples taken with replacements from original data and missing values (acts as dependent variable) are predicted using non-missing values (independent variable).
+
+# Then, it uses predictive mean matching (default) to impute missing values. Predictive mean matching works well for continuous and categorical (binary & multi-level) without the need for computing residuals and maximum likelihood fit.
+
+# Here are some important highlights of this package:
+    # It assumes linearity in the variables being predicted.
+    # Fisher’s optimum scoring method is used for predicting categorical variables.
+
+##############################
+
+
+#### STEP 1: LOAD DATA AND GET SUMMARY ####
+library(Hmisc)
+
+# Since bagging works well on categorical variable too, we don’t need to remove them here. It very well takes care of missing value pertaining to their variable types
+Dataframe_numeric <- Dataframe %>%
+  ungroup() %>%
+  filter(Cohort=="Dataframe") %>%
+  select(GroupingVariable1, GroupingVariable2, Cov1, Cov2, Cov3, DV1, DV2, DV3, DV4, DV5, TIV, Cov4, DV6)
+
+summary(Dataframe_numeric)
+
+
+
+#### STEP 2: IMPUTE MISSING VALUES ####
+
+# argImpute() automatically identifies the variable type and treats them accordingly. 
+impute_arg <- aregImpute(~ DV1 + DV6 + Cov1 + GroupingVariable1 + GroupingVariable2, data = Dataframe_numeric, n.impute = 5)  
+
+# Check output: The output shows R² values for predicted missing values. Higher the value, better are the values predicted. 
+impute_arg
+
+# Check imputed values
+impute_arg$imputed$DV1  # check imputed variable DV1
+
+
+
+#### STEP 3: COMPARE TO OTHER IMPUTATION METHODS ####
+
+# Impute with mean value
+Dataframe_numeric$imputed_DV_1 <- with(Dataframe_numeric, impute(DV1, mean))  # similarly you can use min, max, median to impute missing value
+
+# Impute with random value
+Dataframe_numeric$imputed_DV_2 <- with(Dataframe_numeric, impute(DV1, 'random'))
+
+```
+
+
+#### METHOD: MI ####
+```{r}
+# mi (Multiple imputation with diagnostics) package provides several features for dealing with missing values. Like other packages, it also builds multiple imputation models to approximate missing values. And, uses predictive mean matching method.
+
+# Briefly, predictive mean matching (pmm): For each observation in a variable with missing value, we find observation (from available values) with the closest predictive mean to that variable. The observed value from this “match” is then used as imputed value.
+
+# Some unique characteristics of this package:
+    # It allows graphical diagnostics of imputation models and convergence of imputation process.
+    # It uses bayesian version of regression models to handle issue of separation.
+    # Imputation model specification is similar to regression output in R
+    # It automatically detects irregularities in data such as high collinearity among variables.
+    # Also, it adds noise to imputation process to solve the problem of additive constraints.
+
+##############################
+
+
+#### STEP 1: LOAD DATA AND GET SUMMARY ####
+library(mi)
+
+# Since bagging works well on categorical variable too, we don’t need to remove them here. It very well takes care of missing value pertaining to their variable types
+Dataframe_numeric <- Dataframe %>%
+  ungroup() %>%
+  filter(Cohort=="Dataframe") %>%
+  select(GroupingVariable1, GroupingVariable2, Cov1, Cov2, Cov3, DV1, DV2, DV3, DV4, DV5, TIV, Cov4, DV6)
+
+summary(Dataframe_numeric)
+
+
+
+#### IMPUTE MISSING VALUES WITH MI ####
+mi_data <- mi(Dataframe_numeric, seed = 335)  # imputing missing value with mi
+
+# Note: Default parameters:
+    # rand.imp.method as “bootstrap”
+    # n.imp (number of multiple imputations) as 3
+    # n.iter ( number of iterations) as 30
+
+# Get summary statistics to define the imputed values
+summary(mi_data)
+
+```
+
+
+
+#### METHOD: PREDICTION USING KNN IMPUTATION ####
+```{r}
+## Prediction is most advanced method to impute your missing values and includes different approaches such as: kNN Imputation, rpart, and mice.
+
+# DMwR::knnImputation uses k-Nearest Neighbours approach to impute missing values. What kNN imputation does in simpler terms is as follows: For every observation to be imputed, it identifies ‘k’ closest observations based on the euclidean distance and computes the weighted average (weighted based on distance) of these ‘k’ obs.
+
+# The advantage is that you could impute all the missing values in all variables with one call to the function. It takes the whole data frame as the argument and you don’t even have to specify which variable you want to impute. But be cautious not to include the response variable while imputing, because, when imputing in test/production environment, if your data contains missing values, you won’t be able to use the unknown response variable at that time.
+
+library(DMwR)
+
+# Example
+knnOutput <- knnImputation(Dataframe[, !names(Dataframe) %in% "DV"])  # perform knn imputation.
+anyNA(knnOutput)
+
+# Lets compute the accuracy.
+actuals <- original$DV2[is.na(Dataframe$DV2)]
+predicteds <- knnOutput[is.na(Dataframe$DV2), "DV2"]
+regr.eval(actuals, predicteds)
+
+# The mean absolute percentage error (mape) has improved by ~ 39% compared to the imputation by mean. Good.
+
+```
+
+
+#### METHOD: PREDICTION USING RPART IMPUTATION ####
+```{r}
+# The limitation with DMwR::knnImputation is that it sometimes may not be appropriate to use when the missing value comes from a factor variable. Both rpart and mice has flexibility to handle that scenario. The advantage with rpart is that you just need only one of the variables to be non NA in the predictor fields.
+
+# The idea here is we are going to use rpart to predict the missing values instead of kNN. To handle factor variable, we can set the method=class while calling rpart(). For numeric, we use, method=anova. Here again, we need to make sure not to train rpart on response variable (DV).
+
+library(rpart)
+
+# Example
+class_mod <- rpart(rad ~ . - DV, data=Dataframe[!is.na(Dataframe$rad), ], method="class", na.action=na.omit)  # since rad is a factor
+anova_mod <- rpart(DV2 ~ . - DV, data=Dataframe[!is.na(Dataframe$DV2), ], method="anova", na.action=na.omit)  # since DV2 is numeric.
+rad_pred <- predict(class_mod, Dataframe[is.na(Dataframe$rad), ])
+ptratio_pred <- predict(anova_mod, Dataframe[is.na(Dataframe$DV2), ])
+
+# Lets compute the accuracy for DV2
+actuals <- original$DV2[is.na(Dataframe$DV2)]
+predicteds <- DV2_pred
+regr.eval(actuals, predicteds)
+# The mean absolute percentage error (mape) has improved additionally by another ~ 30% compared to the knnImputation. Very Good.
+
+# Accuracy for rad
+actuals <- original$rad[is.na(Dataframe$rad)]
+predicteds <- as.numeric(colnames(rad_pred)[apply(rad_pred, 1, which.max)])
+mean(actuals != predicteds)  # compute misclass error.
+# This yields a mis-classification error of 25%. Not bad for a factor variable!
+
+```
+
+
+
+--- ADDITIONAL RESOURCES
+```{r}
+# Missing value treatment:
+   # https://datascienceplus.com/missing-value-treatment/
+   # https://medium.com/coinmonks/dealing-with-missing-data-using-r-3ae428da2d17
+# Packages for missing data:
+   # https://www.analyticsvidhya.com/blog/2016/03/tutorial-powerful-packages-imputing-missing-values/
+```
+
+
+
